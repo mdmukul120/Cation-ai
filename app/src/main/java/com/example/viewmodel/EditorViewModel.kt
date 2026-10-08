@@ -14,6 +14,9 @@ import com.example.service.VideoExporter
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 enum class EditorTab(val title: String) {
@@ -67,7 +70,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     val grokApiKey: StateFlow<String> = _grokApiKey.asStateFlow()
 
     init {
-        // Prepare initial synthetic audio file for the default project so it can play immediately
         viewModelScope.launch {
             try {
                 val demoAudio = audioService.createSyntheticAudioFile(18)
@@ -102,23 +104,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun onAudioSelected(uri: Uri, fileName: String, durationMsHint: Long = 20000L) {
         viewModelScope.launch {
-            val path = uri.toString()
-            audioService.loadAudio(path, durationMsHint)
-            val dur = if (audioService.durationMs.value > 0) audioService.durationMs.value else durationMsHint
+            val localFile = audioService.copyUriToLocalFile(uri)
+            val realDur = audioService.getAccurateDuration(localFile.absolutePath).coerceAtLeast(durationMsHint)
+            audioService.loadAudio(localFile.absolutePath, realDur)
 
             _project.update {
                 it.copy(
-                    title = fileName.substringBeforeLast(".").ifBlank { "New Audio Project" },
-                    audioUri = path,
-                    audioDurationMs = dur,
+                    title = fileName.substringBeforeLast(".").ifBlank { "Imported Voice" },
+                    audioUri = localFile.absolutePath,
+                    audioDurationMs = realDur,
                     isDemo = false
                 )
             }
 
-            // Automatically run AI voice analysis & transcription
             runAiProcessing(
-                transcriptPrompt = "অডিও ট্রান্সক্রিপ্ট এবং ভয়েস বিশ্লেষণ",
-                durationMs = dur
+                transcriptPrompt = "",
+                durationMs = realDur,
+                audioFile = localFile
             )
         }
     }
@@ -133,13 +135,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun stopRecordingAndImport() {
         val recordedFile = audioService.stopRecording()
         if (recordedFile != null && recordedFile.exists()) {
-            val dur = 15000L // Default estimate for newly recorded voice
-            audioService.loadAudio(recordedFile.absolutePath, dur)
-            val realDur = if (audioService.durationMs.value > 0) audioService.durationMs.value else dur
+            val liveText = audioService.liveRecognizedText.value
+            val realDur = audioService.getAccurateDuration(recordedFile.absolutePath).coerceAtLeast(2000L)
+            audioService.loadAudio(recordedFile.absolutePath, realDur)
 
+            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             _project.update {
                 it.copy(
-                    title = "My Voice Recording",
+                    title = "Voice Recording ($timeStr)",
                     audioUri = recordedFile.absolutePath,
                     audioDurationMs = realDur,
                     isDemo = false
@@ -147,7 +150,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             runAiProcessing(
-                transcriptPrompt = "আমার নিজের কণ্ঠে রেকর্ডকৃত বক্তব্য। লক্ষ্য এবং অনুপ্রেরণার ভাবনা।",
+                transcriptPrompt = liveText,
                 durationMs = realDur,
                 audioFile = recordedFile
             )
@@ -155,7 +158,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Run Gemini Summarization & Captions + Grok Voice Analysis
+     * Run Gemini Audio Transcription & Summary + Grok Voice Cadence Analysis
      */
     fun runAiProcessing(
         transcriptPrompt: String,
@@ -164,28 +167,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             _isAiProcessing.value = true
-            _aiStatusMessage.value = "Grok এআই অডিও ও ভয়েস ক্যাডেন্স বিশ্লেষণ করছে..."
+            _aiStatusMessage.value = "জেমিনি এআই অডিও শুনে সাবটাইটেল তৈরি করছে..."
 
-            // 1. Run Grok Voice Analysis
-            val grokResult = grokService.analyzeVoiceAudio(
-                transcript = transcriptPrompt,
-                durationMs = durationMs,
-                customApiKey = _grokApiKey.value
-            )
-            val voiceAnalysis = grokResult.getOrNull() ?: grokService.computeSmartAcousticAnalysis(transcriptPrompt, durationMs)
-
-            _aiStatusMessage.value = "জেমিনি এআই টেক্সট সামারি এবং কি-পয়েন্ট তৈরি করছে..."
-
-            // 2. Run Gemini Summary
-            val summaryResult = geminiService.generateSpeechSummary(
-                transcriptOrTopic = transcriptPrompt,
-                customApiKey = _geminiApiKey.value
-            )
-            val summary = summaryResult.getOrNull() ?: geminiService.createSmartFallbackSummary(transcriptPrompt)
-
-            _aiStatusMessage.value = "জেমিনি এআই টাইমস্ট্যাম্পড ক্যাপশন এবং ওয়ার্ড হাইলাইট সিঙ্ক করছে..."
-
-            // 3. Run Gemini Synced Captions
+            // 1. Run Gemini Synced Captions (Listens directly to the audio file!)
             val captionsResult = geminiService.generateSyncedCaptions(
                 audioTextOrFile = transcriptPrompt,
                 audioDurationMs = durationMs,
@@ -193,6 +177,28 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 customApiKey = _geminiApiKey.value
             )
             val captions = captionsResult.getOrNull() ?: geminiService.createSmartSynchronizedCaptions(transcriptPrompt, durationMs)
+
+            _aiStatusMessage.value = "জেমিনি এআই বক্তব্যের সারসংক্ষেপ প্রস্তুত করছে..."
+
+            val effectiveTranscript = if (transcriptPrompt.isNotBlank()) transcriptPrompt else captions.joinToString(" ") { it.text }
+
+            // 2. Run Gemini Summary
+            val summaryResult = geminiService.generateSpeechSummary(
+                transcriptOrTopic = effectiveTranscript,
+                audioFile = audioFile,
+                customApiKey = _geminiApiKey.value
+            )
+            val summary = summaryResult.getOrNull() ?: geminiService.createSmartFallbackSummary(effectiveTranscript)
+
+            _aiStatusMessage.value = "Grok এআই ভয়েস ক্যাডেন্স ও পাঞ্চ শব্দ বিশ্লেষণ করছে..."
+
+            // 3. Run Grok Voice Analysis
+            val grokResult = grokService.analyzeVoiceAudio(
+                transcript = effectiveTranscript,
+                durationMs = durationMs,
+                customApiKey = _grokApiKey.value
+            )
+            val voiceAnalysis = grokResult.getOrNull() ?: grokService.computeSmartAcousticAnalysis(effectiveTranscript, durationMs)
 
             _project.update { current ->
                 current.copy(
@@ -343,6 +349,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     allCaps = false,
                     showWordHighlight = true
                 )
+                CaptionStyleTemplate.BOXED_HIGHLIGHT -> current.copy(
+                    template = template,
+                    fontFamily = FontFamilyPreset.SANS_BOLD,
+                    textColor = 0xFFFFFFFF,
+                    highlightColor = 0xFFFFD600,
+                    strokeColor = 0xFF000000,
+                    strokeWidth = 0f,
+                    allCaps = true,
+                    showWordHighlight = true
+                )
                 CaptionStyleTemplate.MINIMAL_PILL -> current.copy(
                     template = template,
                     fontFamily = FontFamilyPreset.MODERN_SANS,
@@ -390,6 +406,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         updateStyle { it.copy(backgroundPreset = bg) }
     }
 
+    fun setCustomSolidBgColor(color: Long) {
+        updateStyle { it.copy(backgroundPreset = BackgroundPreset.SOLID_CUSTOM, customSolidBgColor = color) }
+    }
+
+    fun setTextColor(color: Long) {
+        updateStyle { it.copy(textColor = color) }
+    }
+
     fun setFont(font: FontFamilyPreset) {
         updateStyle { it.copy(fontFamily = font) }
     }
@@ -417,7 +441,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 _exportState.value = ExportState(
                     isExporting = false,
                     progress = 1.0f,
-                    statusMessage = "ভিডিও সফলভাবে রেন্ডার হয়েছে!",
+                    statusMessage = "অডিও সহ সম্পূর্ণ ভিডিও সফলভাবে তৈরি হয়েছে!",
                     exportedFile = file
                 )
             }.onFailure { err ->
@@ -550,7 +574,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 aspectRatio = VideoAspectRatio.NINE_SIXTEEN,
                 backgroundPreset = BackgroundPreset.DARK_STUDIO,
                 fontFamily = FontFamilyPreset.SANS_BOLD,
-                fontSizeSp = 24,
+                fontSizeSp = 26,
                 textColor = 0xFFFFFFFF,
                 highlightColor = 0xFFFFEB3B,
                 strokeColor = 0xFF000000,
@@ -651,7 +675,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 aspectRatio = VideoAspectRatio.NINE_SIXTEEN,
                 backgroundPreset = BackgroundPreset.GRADIENT_NEON,
                 fontFamily = FontFamilyPreset.MONOSPACE,
-                fontSizeSp = 24,
+                fontSizeSp = 26,
                 textColor = 0xFFFFFFFF,
                 highlightColor = 0xFF00E5FF,
                 strokeColor = 0xFF003366,
@@ -740,7 +764,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 aspectRatio = VideoAspectRatio.NINE_SIXTEEN,
                 backgroundPreset = BackgroundPreset.GRADIENT_SUNSET,
                 fontFamily = FontFamilyPreset.BANGLA_CALLIGRAPHIC,
-                fontSizeSp = 22,
+                fontSizeSp = 24,
                 textColor = 0xFFFFFFFF,
                 highlightColor = 0xFFFFD700,
                 strokeWidth = 0f,

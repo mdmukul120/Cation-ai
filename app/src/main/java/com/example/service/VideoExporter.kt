@@ -3,25 +3,25 @@ package com.example.service
 import android.content.Context
 import android.graphics.*
 import android.media.*
+import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import com.example.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
+import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.util.Locale
 
 class VideoExporter(private val context: Context) {
 
     /**
-     * Renders a real MP4 video file with animated background and synchronized dynamic captions.
+     * Renders a real MP4 video file with animated background, synchronized dynamic captions,
+     * and multiplexed synchronized audio from the project's source audio!
      */
     suspend fun exportVideo(
         project: ProjectState,
-        resolutionWidth: Int = 720,
-        resolutionHeight: Int = 1280,
         fps: Int = 30,
         onProgress: (Float, String) -> Unit
     ): Result<File> = withContext(Dispatchers.Default) {
@@ -32,7 +32,7 @@ class VideoExporter(private val context: Context) {
         val outputFile = File(exportDir, "CapGrok_${cleanTitle}_${System.currentTimeMillis()}.mp4")
 
         try {
-            onProgress(0.05f, "ভিডিও এনকোডার প্রস্তুত হচ্ছে...")
+            onProgress(0.05f, "অডিও ও ভিডিও এনকোডার প্রস্তুত হচ্ছে...")
 
             // Adjust dimensions according to aspect ratio
             val (width, height) = when (project.style.aspectRatio) {
@@ -41,25 +41,53 @@ class VideoExporter(private val context: Context) {
                 VideoAspectRatio.SIXTEEN_NINE -> Pair(1280, 720)
             }
 
-            val durationMs = project.audioDurationMs.coerceAtLeast(4000L).coerceAtMost(120000L)
-            val totalFrames = ((durationMs / 1000f) * fps).toInt().coerceAtLeast(30)
+            // Exact duration matching the voice
+            val durationMs = project.audioDurationMs.coerceAtLeast(1000L).coerceAtMost(300000L)
+            val totalFrames = ((durationMs / 1000f) * fps).toInt().coerceAtLeast(15)
             val bitRate = 4_000_000 // 4 Mbps high quality
-            val mimeType = MediaFormat.MIMETYPE_VIDEO_AVC
+            val videoMimeType = MediaFormat.MIMETYPE_VIDEO_AVC
 
-            val format = MediaFormat.createVideoFormat(mimeType, width, height).apply {
+            // 1. Prepare Audio Source (Ensure AAC track is ready for MP4 container)
+            val audioSourceFile = resolveAudioSourceFile(project.audioUri)
+            val preparedAacFile = audioSourceFile?.let { prepareAacAudioFile(it) }
+
+            val audioExtractor = MediaExtractor()
+            var audioTrackIndexInExtractor = -1
+            var audioFormat: MediaFormat? = null
+
+            if (preparedAacFile != null && preparedAacFile.exists()) {
+                try {
+                    audioExtractor.setDataSource(preparedAacFile.absolutePath)
+                    for (i in 0 until audioExtractor.trackCount) {
+                        val format = audioExtractor.getTrackFormat(i)
+                        val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                        if (mime.startsWith("audio/")) {
+                            audioTrackIndexInExtractor = i
+                            audioFormat = format
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("VideoExporter", "AudioExtractor failed: ${e.message}")
+                }
+            }
+
+            // 2. Prepare Video Encoder
+            val videoFormat = MediaFormat.createVideoFormat(videoMimeType, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second keyframes
             }
 
-            val encoder = MediaCodec.createEncoderByType(mimeType)
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val encoder = MediaCodec.createEncoderByType(videoMimeType)
+            encoder.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val inputSurface = encoder.createInputSurface()
             encoder.start()
 
             val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             var videoTrackIndex = -1
+            var audioTrackIndexInMuxer = -1
             var muxerStarted = false
 
             val bufferInfo = MediaCodec.BufferInfo()
@@ -70,19 +98,19 @@ class VideoExporter(private val context: Context) {
 
             val frameDurationUs = (1_000_000L / fps)
 
-            // Render loop
+            // 3. Render and Encode Video Frames
             for (frameIdx in 0 until totalFrames) {
                 val currentTimestampMs = ((frameIdx.toFloat() / fps) * 1000f).toLong()
                 val currentTimestampUs = frameIdx * frameDurationUs
 
-                // Lock hardware canvas
+                // Lock hardware canvas to draw frame
                 val canvas = inputSurface.lockHardwareCanvas()
                 if (canvas != null) {
                     try {
-                        // 1. Draw animated background
-                        drawBackground(canvas, width, height, project.style.backgroundPreset, frameIdx, totalFrames)
+                        // Draw selected background (Gradient / Solid / Custom / Cyber)
+                        drawBackground(canvas, width, height, project.style, frameIdx, totalFrames)
 
-                        // 2. Draw synchronized captions
+                        // Draw synchronized typography & active word highlights
                         drawCaptions(
                             canvas = canvas,
                             width = width,
@@ -97,7 +125,7 @@ class VideoExporter(private val context: Context) {
                     }
                 }
 
-                // Drain encoder output
+                // Drain video encoder output
                 while (true) {
                     val outputBufferIndex = encoder.dequeueOutputBuffer(bufferInfo, 0)
                     if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
@@ -106,8 +134,18 @@ class VideoExporter(private val context: Context) {
                         if (muxerStarted) {
                             throw RuntimeException("Format changed after muxer started")
                         }
-                        val newFormat = encoder.outputFormat
-                        videoTrackIndex = muxer.addTrack(newFormat)
+                        val newVideoFormat = encoder.outputFormat
+                        videoTrackIndex = muxer.addTrack(newVideoFormat)
+
+                        // Add audio track to muxer BEFORE starting muxer!
+                        if (audioFormat != null) {
+                            try {
+                                audioTrackIndexInMuxer = muxer.addTrack(audioFormat)
+                            } catch (e: Exception) {
+                                Log.w("VideoExporter", "Failed to add audio track: ${e.message}")
+                            }
+                        }
+
                         muxer.start()
                         muxerStarted = true
                     } else if (outputBufferIndex >= 0) {
@@ -126,20 +164,20 @@ class VideoExporter(private val context: Context) {
                 }
 
                 // Progress update
-                val progress = 0.1f + 0.85f * (frameIdx.toFloat() / totalFrames)
-                if (frameIdx % 10 == 0 || frameIdx == totalFrames - 1) {
+                val progress = 0.05f + 0.75f * (frameIdx.toFloat() / totalFrames)
+                if (frameIdx % 15 == 0 || frameIdx == totalFrames - 1) {
                     val percent = (progress * 100).toInt()
                     onProgress(progress, "ভিডিও ফ্রেম রেন্ডার হচ্ছে ($frameIdx/$totalFrames) - $percent%")
                 }
             }
 
-            // Signal End of Stream
+            // Signal End of Stream for Video
             encoder.signalEndOfInputStream()
 
-            // Drain remaining frames
+            // Drain remaining video frames
             var eos = false
             var drainTries = 0
-            while (!eos && drainTries < 50) {
+            while (!eos && drainTries < 60) {
                 drainTries++
                 val outputBufferIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outputBufferIndex >= 0) {
@@ -152,14 +190,51 @@ class VideoExporter(private val context: Context) {
                     }
                     encoder.releaseOutputBuffer(outputBufferIndex, false)
                 } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    if (drainTries > 10) break
+                    if (drainTries > 15) break
                 }
             }
 
-            // Clean up
             try {
                 encoder.stop()
                 encoder.release()
+            } catch (_: Exception) {}
+
+            // 4. Multiplex Audio Track into MP4
+            if (muxerStarted && audioTrackIndexInMuxer >= 0 && audioTrackIndexInExtractor >= 0) {
+                onProgress(0.85f, "অরিজিনাল ভয়েস ও অডিও ট্র্যাক যুক্ত হচ্ছে...")
+                try {
+                    audioExtractor.selectTrack(audioTrackIndexInExtractor)
+                    val maxAudioBufferSize = (audioFormat?.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) ?: (128 * 1024)).coerceAtLeast(64 * 1024)
+                    val audioBuffer = ByteBuffer.allocate(maxAudioBufferSize)
+                    val audioBufferInfo = MediaCodec.BufferInfo()
+
+                    val maxTimeUs = durationMs * 1000L
+
+                    while (true) {
+                        audioBufferInfo.offset = 0
+                        audioBufferInfo.size = audioExtractor.readSampleData(audioBuffer, 0)
+                        if (audioBufferInfo.size < 0) {
+                            break // End of audio stream
+                        }
+
+                        val sampleTimeUs = audioExtractor.sampleTime
+                        if (sampleTimeUs > maxTimeUs) {
+                            break // Reached video end
+                        }
+
+                        audioBufferInfo.presentationTimeUs = sampleTimeUs
+                        audioBufferInfo.flags = audioExtractor.sampleFlags
+
+                        muxer.writeSampleData(audioTrackIndexInMuxer, audioBuffer, audioBufferInfo)
+                        audioExtractor.advance()
+                    }
+                } catch (e: Exception) {
+                    Log.e("VideoExporter", "Error writing audio samples: ${e.message}", e)
+                }
+            }
+
+            try {
+                audioExtractor.release()
             } catch (_: Exception) {}
 
             try {
@@ -167,9 +242,11 @@ class VideoExporter(private val context: Context) {
                     muxer.stop()
                 }
                 muxer.release()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e("VideoExporter", "Muxer release error: ${e.message}")
+            }
 
-            onProgress(1.0f, "এক্সপোর্ট সম্পূর্ণ হয়েছে!")
+            onProgress(1.0f, "সম্পূর্ণ ভিডিও তৈরি হয়েছে!")
             Result.success(outputFile)
         } catch (e: Exception) {
             Log.e("VideoExporter", "Failed to export video: ${e.message}", e)
@@ -177,42 +254,149 @@ class VideoExporter(private val context: Context) {
         }
     }
 
+    /**
+     * Resolves audio file from path or uri
+     */
+    private fun resolveAudioSourceFile(audioUriOrPath: String?): File? {
+        if (audioUriOrPath.isNullOrBlank()) return null
+        return if (audioUriOrPath.startsWith("/")) {
+            val f = File(audioUriOrPath)
+            if (f.exists()) f else null
+        } else {
+            try {
+                val uri = Uri.parse(audioUriOrPath)
+                val destFile = File(context.cacheDir, "source_export_audio.m4a")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (destFile.exists()) destFile else null
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Converts WAV/PCM to AAC in M4A container if needed, so that MediaMuxer can write it.
+     */
+    private fun prepareAacAudioFile(sourceFile: File): File? {
+        // If already M4A or AAC, return directly
+        if (sourceFile.name.endsWith(".m4a", true) || sourceFile.name.endsWith(".aac", true)) {
+            return sourceFile
+        }
+
+        // If WAV, encode to AAC using MediaCodec
+        val aacFile = File(context.cacheDir, "transcoded_${System.currentTimeMillis()}.m4a")
+        return try {
+            encodeWavToAac(sourceFile, aacFile)
+            if (aacFile.exists() && aacFile.length() > 0) aacFile else sourceFile
+        } catch (e: Exception) {
+            Log.w("VideoExporter", "WAV to AAC transcode fallback: ${e.message}")
+            sourceFile
+        }
+    }
+
+    private fun encodeWavToAac(wavFile: File, outputFile: File) {
+        val sampleRate = 22050
+        val channels = 1
+        val bitRate = 64000
+
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+        }
+
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        encoder.start()
+
+        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var audioTrackIndex = -1
+        var muxerStarted = false
+
+        val bufferInfo = MediaCodec.BufferInfo()
+        val inputStream = FileInputStream(wavFile)
+        // Skip 44-byte WAV header
+        inputStream.skip(44)
+
+        val rawBuffer = ByteArray(4096)
+        var eos = false
+        var presentationTimeUs = 0L
+
+        while (!eos) {
+            val inputBufIndex = encoder.dequeueInputBuffer(10_000)
+            if (inputBufIndex >= 0) {
+                val inputBuffer = encoder.getInputBuffer(inputBufIndex) ?: continue
+                inputBuffer.clear()
+                val bytesRead = inputStream.read(rawBuffer)
+                if (bytesRead <= 0) {
+                    encoder.queueInputBuffer(inputBufIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    eos = true
+                } else {
+                    inputBuffer.put(rawBuffer, 0, bytesRead)
+                    encoder.queueInputBuffer(inputBufIndex, 0, bytesRead, presentationTimeUs, 0)
+                    presentationTimeUs += (bytesRead / 2L * 1_000_000L / sampleRate)
+                }
+            }
+
+            while (true) {
+                val outputBufIndex = encoder.dequeueOutputBuffer(bufferInfo, 0)
+                if (outputBufIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    break
+                } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = encoder.outputFormat
+                    audioTrackIndex = muxer.addTrack(newFormat)
+                    muxer.start()
+                    muxerStarted = true
+                } else if (outputBufIndex >= 0) {
+                    val encodedBuffer = encoder.getOutputBuffer(outputBufIndex)
+                    if (encodedBuffer != null && bufferInfo.size > 0 && muxerStarted) {
+                        muxer.writeSampleData(audioTrackIndex, encodedBuffer, bufferInfo)
+                    }
+                    encoder.releaseOutputBuffer(outputBufIndex, false)
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        break
+                    }
+                }
+            }
+        }
+
+        inputStream.close()
+        try {
+            encoder.stop()
+            encoder.release()
+        } catch (_: Exception) {}
+        try {
+            if (muxerStarted) muxer.stop()
+            muxer.release()
+        } catch (_: Exception) {}
+    }
+
     private fun drawBackground(
         canvas: Canvas,
         width: Int,
         height: Int,
-        preset: BackgroundPreset,
+        style: VideoStyle,
         frameIdx: Int,
         totalFrames: Int
     ) {
         val t = (frameIdx.toFloat() / totalFrames.coerceAtLeast(1)) * 2f * Math.PI.toFloat()
         val shift = kotlin.math.sin(t) * 0.2f
 
-        val (startColor, endColor) = when (preset) {
-            BackgroundPreset.GRADIENT_NEON -> Pair(
-                Color.rgb(18, 14, 45),
-                Color.rgb(10, 48, 75)
-            )
-            BackgroundPreset.GRADIENT_SUNSET -> Pair(
-                Color.rgb(45, 12, 32),
-                Color.rgb(65, 24, 15)
-            )
-            BackgroundPreset.DARK_STUDIO -> Pair(
-                Color.rgb(22, 20, 36),
-                Color.rgb(12, 10, 20)
-            )
-            BackgroundPreset.CYBER_PULSE -> Pair(
-                Color.rgb(38, 12, 60),
-                Color.rgb(14, 8, 30)
-            )
-            BackgroundPreset.SOLID_EMERALD -> Pair(
-                Color.rgb(8, 40, 32),
-                Color.rgb(4, 20, 16)
-            )
-            BackgroundPreset.MINIMAL_BLACK, BackgroundPreset.CUSTOM_MEDIA -> Pair(
-                Color.rgb(8, 8, 12),
-                Color.rgb(15, 15, 22)
-            )
+        // Check if custom solid color is selected
+        if (style.backgroundPreset == BackgroundPreset.SOLID_CUSTOM) {
+            canvas.drawColor(style.customSolidBgColor.toInt())
+            return
+        }
+
+        val (startColor, endColor) = when (style.backgroundPreset) {
+            BackgroundPreset.GRADIENT_NEON -> Pair(Color.rgb(18, 14, 45), Color.rgb(10, 48, 75))
+            BackgroundPreset.GRADIENT_SUNSET -> Pair(Color.rgb(45, 12, 32), Color.rgb(65, 24, 15))
+            BackgroundPreset.DARK_STUDIO -> Pair(Color.rgb(22, 20, 36), Color.rgb(12, 10, 20))
+            BackgroundPreset.CYBER_PULSE -> Pair(Color.rgb(38, 12, 60), Color.rgb(14, 8, 30))
+            BackgroundPreset.SOLID_EMERALD -> Pair(Color.rgb(8, 40, 32), Color.rgb(4, 20, 16))
+            BackgroundPreset.MINIMAL_BLACK, BackgroundPreset.SOLID_CUSTOM, BackgroundPreset.CUSTOM_MEDIA -> Pair(Color.rgb(8, 8, 12), Color.rgb(15, 15, 22))
         }
 
         val gradient = LinearGradient(
@@ -222,15 +406,13 @@ class VideoExporter(private val context: Context) {
             Shader.TileMode.CLAMP
         )
 
-        val bgPaint = Paint().apply {
-            shader = gradient
-        }
+        val bgPaint = Paint().apply { shader = gradient }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
         // Subtle ambient sound wave pulses
         val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(25, 0, 229, 255)
-            style = Paint.Style.STROKE
+            this.style = Paint.Style.STROKE
             strokeWidth = 3f
         }
         val midY = height * 0.5f
@@ -258,10 +440,11 @@ class VideoExporter(private val context: Context) {
         // Configure font & paint
         val typefaceStyle = when (style.fontFamily) {
             FontFamilyPreset.SANS_BOLD -> Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            FontFamilyPreset.BANGLA_CALLIGRAPHIC, FontFamilyPreset.BANGLA_MODERN -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
             FontFamilyPreset.MODERN_SANS -> Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
             FontFamilyPreset.ELEGANT_SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
             FontFamilyPreset.MONOSPACE -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            FontFamilyPreset.BANGLA_CALLIGRAPHIC -> Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC)
+            FontFamilyPreset.HEAVY_IMPACT -> Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
 
         val baseTextSize = (style.fontSizeSp * (width / 360f)).coerceIn(28f, 72f)
@@ -276,52 +459,28 @@ class VideoExporter(private val context: Context) {
         strokePaint.color = style.strokeColor.toInt()
 
         val textToRender = if (style.allCaps) segment.text.uppercase(Locale.getDefault()) else segment.text
-
-        // Check if there are active words for Karaoke / Hormozi styling
         val activeWord = segment.words.find { currentTimeMs in it.startMs..it.endMs }
 
         when (style.template) {
             CaptionStyleTemplate.HORMOZI_PUNCH -> {
-                // Large punchy text with black stroke, yellow active highlight
                 val words = segment.words.ifEmpty {
-                    val raw = textToRender.split("\\s+".toRegex()).filter { it.isNotBlank() }
-                    raw.map { WordTiming(it, segment.startMs, segment.endMs) }
+                    textToRender.split("\\s+".toRegex()).map { WordTiming(it, segment.startMs, segment.endMs) }
                 }
-
-                // Render words side-by-side centered
-                drawWordsInLine(
-                    canvas = canvas,
-                    words = words,
-                    activeWord = activeWord,
-                    centerX = width * 0.5f,
-                    centerY = centerY,
-                    textPaint = textPaint,
-                    strokePaint = strokePaint,
-                    style = style,
-                    bounceActive = true
-                )
+                drawWordsInLine(canvas, words, activeWord, width * 0.5f, centerY, textPaint, strokePaint, style, bounceActive = true)
             }
             CaptionStyleTemplate.CAPCUT_BOUNCE -> {
-                // Sleek typography with scaling bounce on active word
                 val words = segment.words.ifEmpty {
-                    val raw = textToRender.split("\\s+".toRegex()).filter { it.isNotBlank() }
-                    raw.map { WordTiming(it, segment.startMs, segment.endMs) }
+                    textToRender.split("\\s+".toRegex()).map { WordTiming(it, segment.startMs, segment.endMs) }
                 }
-
-                drawWordsInLine(
-                    canvas = canvas,
-                    words = words,
-                    activeWord = activeWord,
-                    centerX = width * 0.5f,
-                    centerY = centerY,
-                    textPaint = textPaint,
-                    strokePaint = strokePaint,
-                    style = style,
-                    bounceActive = true
-                )
+                drawWordsInLine(canvas, words, activeWord, width * 0.5f, centerY, textPaint, strokePaint, style, bounceActive = true)
+            }
+            CaptionStyleTemplate.BOXED_HIGHLIGHT -> {
+                val words = segment.words.ifEmpty {
+                    textToRender.split("\\s+".toRegex()).map { WordTiming(it, segment.startMs, segment.endMs) }
+                }
+                drawWordsInLine(canvas, words, activeWord, width * 0.5f, centerY, textPaint, strokePaint, style, bounceActive = false, drawBoxForActive = true)
             }
             CaptionStyleTemplate.MINIMAL_PILL -> {
-                // Glass pill background behind text
                 val bounds = Rect()
                 textPaint.getTextBounds(textToRender, 0, textToRender.length, bounds)
                 val padX = 36f
@@ -338,29 +497,16 @@ class VideoExporter(private val context: Context) {
                 }
                 canvas.drawRoundRect(rect, 24f, 24f, pillPaint)
 
-                // White text
                 textPaint.color = style.textColor.toInt()
                 canvas.drawText(textToRender, width * 0.5f, centerY + bounds.height() * 0.35f, textPaint)
             }
             CaptionStyleTemplate.KARAOKE_FLOW -> {
                 val words = segment.words.ifEmpty {
-                    val raw = textToRender.split("\\s+".toRegex()).filter { it.isNotBlank() }
-                    raw.map { WordTiming(it, segment.startMs, segment.endMs) }
+                    textToRender.split("\\s+".toRegex()).map { WordTiming(it, segment.startMs, segment.endMs) }
                 }
-                drawWordsInLine(
-                    canvas = canvas,
-                    words = words,
-                    activeWord = activeWord,
-                    centerX = width * 0.5f,
-                    centerY = centerY,
-                    textPaint = textPaint,
-                    strokePaint = strokePaint,
-                    style = style,
-                    bounceActive = false
-                )
+                drawWordsInLine(canvas, words, activeWord, width * 0.5f, centerY, textPaint, strokePaint, style, bounceActive = false)
             }
             CaptionStyleTemplate.NEON_CYBER -> {
-                // Glowing border
                 strokePaint.color = Color.rgb(0, 229, 255)
                 strokePaint.strokeWidth = 10f
                 canvas.drawText(textToRender, width * 0.5f, centerY, strokePaint)
@@ -369,7 +515,6 @@ class VideoExporter(private val context: Context) {
                 canvas.drawText(textToRender, width * 0.5f, centerY, textPaint)
             }
             CaptionStyleTemplate.CINEMATIC -> {
-                // Classic serif letterbox look
                 strokePaint.strokeWidth = 4f
                 strokePaint.color = Color.BLACK
                 canvas.drawText(textToRender, width * 0.5f, centerY, strokePaint)
@@ -389,7 +534,8 @@ class VideoExporter(private val context: Context) {
         textPaint: Paint,
         strokePaint: Paint,
         style: VideoStyle,
-        bounceActive: Boolean
+        bounceActive: Boolean,
+        drawBoxForActive: Boolean = false
     ) {
         val wordSpacing = 16f
         val widths = words.map { textPaint.measureText(it.word) }
@@ -402,8 +548,17 @@ class VideoExporter(private val context: Context) {
             val wordX = curX + (w * 0.5f)
             val isActive = activeWord != null && activeWord.word == item.word
 
+            if (isActive && drawBoxForActive) {
+                val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = style.highlightColor.toInt()
+                    this.style = Paint.Style.FILL
+                }
+                val r = RectF(curX - 8f, centerY - 38f, curX + w + 8f, centerY + 14f)
+                canvas.drawRoundRect(r, 10f, 10f, boxPaint)
+            }
+
             val wordColor = if (isActive && style.showWordHighlight) {
-                style.highlightColor.toInt()
+                if (drawBoxForActive) Color.BLACK else style.highlightColor.toInt()
             } else {
                 style.textColor.toInt()
             }
@@ -413,11 +568,11 @@ class VideoExporter(private val context: Context) {
                 canvas.scale(1.15f, 1.15f, wordX, centerY)
             }
 
-            // Stroke outline
-            strokePaint.textAlign = Paint.Align.CENTER
-            canvas.drawText(item.word, wordX, centerY, strokePaint)
+            if (!drawBoxForActive || !isActive) {
+                strokePaint.textAlign = Paint.Align.CENTER
+                canvas.drawText(item.word, wordX, centerY, strokePaint)
+            }
 
-            // Fill color
             textPaint.textAlign = Paint.Align.CENTER
             textPaint.color = wordColor
             canvas.drawText(item.word, wordX, centerY, textPaint)
@@ -430,9 +585,6 @@ class VideoExporter(private val context: Context) {
         }
     }
 
-    /**
-     * Generates an FFmpeg script and command line string matching the user's settings
-     */
     fun generateFFmpegScript(project: ProjectState, audioFileName: String = "audio.mp3"): String {
         val assContent = generateAssSubtitles(project)
         val cmd = """
@@ -447,9 +599,6 @@ class VideoExporter(private val context: Context) {
         return "$cmd\n\n# --- captions.ass Subtitle File ---\n$assContent"
     }
 
-    /**
-     * Formats captions into Advanced SubStation Alpha (.ass) format with styling
-     */
     fun generateAssSubtitles(project: ProjectState): String {
         val sb = StringBuilder()
         sb.appendLine("[Script Info]")
@@ -468,7 +617,6 @@ class VideoExporter(private val context: Context) {
         project.captions.forEach { seg ->
             val startStr = formatAssTime(seg.startMs)
             val endStr = formatAssTime(seg.endMs)
-            // Word-level karaoke tags \k
             val textWithKaraoke = if (seg.words.isNotEmpty()) {
                 seg.words.joinToString(" ") { w ->
                     val durCs = ((w.endMs - w.startMs) / 10).coerceAtLeast(1)
@@ -482,9 +630,6 @@ class VideoExporter(private val context: Context) {
         return sb.toString()
     }
 
-    /**
-     * Formats captions into standard SRT (.srt) format
-     */
     fun generateSrtSubtitles(project: ProjectState): String {
         val sb = StringBuilder()
         project.captions.forEachIndexed { index, seg ->

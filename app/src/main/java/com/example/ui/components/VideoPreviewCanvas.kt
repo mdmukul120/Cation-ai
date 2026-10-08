@@ -95,23 +95,27 @@ fun VideoPreviewCanvas(
                     val w = size.width
                     val h = size.height
 
-                    // 1. Draw animated background
-                    val (bgGradStart, bgGradEnd) = when (style.backgroundPreset) {
-                        BackgroundPreset.GRADIENT_NEON -> Pair(Color(0xFF120E2D), Color(0xFF0A304B))
-                        BackgroundPreset.GRADIENT_SUNSET -> Pair(Color(0xFF2D0C20), Color(0xFF41180F))
-                        BackgroundPreset.DARK_STUDIO -> Pair(Color(0xFF161424), Color(0xFF0C0A14))
-                        BackgroundPreset.CYBER_PULSE -> Pair(Color(0xFF260C3C), Color(0xFF0E081E))
-                        BackgroundPreset.SOLID_EMERALD -> Pair(Color(0xFF082820), Color(0xFF041410))
-                        BackgroundPreset.MINIMAL_BLACK, BackgroundPreset.CUSTOM_MEDIA -> Pair(Color(0xFF08080C), Color(0xFF0F0F16))
-                    }
+                    // 1. Draw Background
+                    if (style.backgroundPreset == BackgroundPreset.SOLID_CUSTOM) {
+                        drawRect(color = Color(style.customSolidBgColor))
+                    } else {
+                        val (bgGradStart, bgGradEnd) = when (style.backgroundPreset) {
+                            BackgroundPreset.GRADIENT_NEON -> Pair(Color(0xFF120E2D), Color(0xFF0A304B))
+                            BackgroundPreset.GRADIENT_SUNSET -> Pair(Color(0xFF2D0C20), Color(0xFF41180F))
+                            BackgroundPreset.DARK_STUDIO -> Pair(Color(0xFF161424), Color(0xFF0C0A14))
+                            BackgroundPreset.CYBER_PULSE -> Pair(Color(0xFF260C3C), Color(0xFF0E081E))
+                            BackgroundPreset.SOLID_EMERALD -> Pair(Color(0xFF082820), Color(0xFF041410))
+                            BackgroundPreset.MINIMAL_BLACK, BackgroundPreset.SOLID_CUSTOM, BackgroundPreset.CUSTOM_MEDIA -> Pair(Color(0xFF08080C), Color(0xFF0F0F16))
+                        }
 
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(bgGradStart, bgGradEnd),
-                            startY = 0f,
-                            endY = h
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(bgGradStart, bgGradEnd),
+                                startY = 0f,
+                                endY = h
+                            )
                         )
-                    )
+                    }
 
                     // Ambient sound wave aura
                     if (isPlaying) {
@@ -133,36 +137,20 @@ fun VideoPreviewCanvas(
 
                         val (composeFontFamily, fontWeight, fontStyle) = when (style.fontFamily) {
                             FontFamilyPreset.SANS_BOLD -> Triple(FontFamily.SansSerif, FontWeight.ExtraBold, FontStyle.Normal)
+                            FontFamilyPreset.BANGLA_CALLIGRAPHIC -> Triple(FontFamily.Serif, FontWeight.Bold, FontStyle.Italic)
+                            FontFamilyPreset.BANGLA_MODERN -> Triple(FontFamily.SansSerif, FontWeight.Bold, FontStyle.Normal)
                             FontFamilyPreset.MODERN_SANS -> Triple(FontFamily.SansSerif, FontWeight.Medium, FontStyle.Normal)
                             FontFamilyPreset.ELEGANT_SERIF -> Triple(FontFamily.Serif, FontWeight.Bold, FontStyle.Normal)
                             FontFamilyPreset.MONOSPACE -> Triple(FontFamily.Monospace, FontWeight.Bold, FontStyle.Normal)
-                            FontFamilyPreset.BANGLA_CALLIGRAPHIC -> Triple(FontFamily.Serif, FontWeight.Bold, FontStyle.Italic)
+                            FontFamilyPreset.HEAVY_IMPACT -> Triple(FontFamily.SansSerif, FontWeight.Black, FontStyle.Normal)
                         }
 
                         val fontSizeSp = (style.fontSizeSp * (w / 340f)).sp.value.coerceIn(16f, 38f).sp
 
                         when (style.template) {
                             CaptionStyleTemplate.HORMOZI_PUNCH -> {
-                                // Hormozi bold with active word pop
                                 val words = currentSegment.words.ifEmpty {
                                     textToRender.split("\\s+".toRegex()).map { WordTiming(it, currentSegment.startMs, currentSegment.endMs) }
-                                }
-                                val wordSpans = words.map { item ->
-                                    val isActive = currentActiveWord != null && currentActiveWord.word == item.word
-                                    val color = if (isActive && style.showWordHighlight) {
-                                        Color(style.highlightColor)
-                                    } else {
-                                        Color(style.textColor)
-                                    }
-                                    AnnotatedString.Range(
-                                        item = SpanStyle(
-                                            color = color,
-                                            fontWeight = if (isActive) FontWeight.Black else FontWeight.ExtraBold,
-                                            fontSize = if (isActive) (fontSizeSp.value * 1.12f).sp else fontSizeSp
-                                        ),
-                                        start = 0,
-                                        end = 0
-                                    )
                                 }
 
                                 val fullAnnotated = buildAnnotatedString {
@@ -192,13 +180,11 @@ fun VideoPreviewCanvas(
                                     constraints = androidx.compose.ui.unit.Constraints(maxWidth = (w * 0.9f).toInt())
                                 )
 
-                                // Thick outline
                                 val textBoundsW = textLayout.size.width.toFloat()
                                 val textBoundsH = textLayout.size.height.toFloat()
                                 val startX = (w - textBoundsW) * 0.5f
                                 val startY = centerY - (textBoundsH * 0.5f)
 
-                                // Draw subtle background shadow pill
                                 drawRoundRect(
                                     color = Color(0x66000000),
                                     topLeft = Offset(startX - 18f, startY - 10f),
@@ -245,6 +231,34 @@ fun VideoPreviewCanvas(
 
                                 drawText(textLayoutResult = layout, topLeft = Offset(sx, sy))
                             }
+                            CaptionStyleTemplate.BOXED_HIGHLIGHT -> {
+                                val words = currentSegment.words.ifEmpty {
+                                    textToRender.split("\\s+".toRegex()).map { WordTiming(it, currentSegment.startMs, currentSegment.endMs) }
+                                }
+                                val fullAnnotated = buildAnnotatedString {
+                                    words.forEachIndexed { idx, wItem ->
+                                        val isActive = currentActiveWord != null && currentActiveWord.word == wItem.word
+                                        val col = if (isActive) Color.Black else Color(style.textColor)
+                                        withStyle(
+                                            SpanStyle(
+                                                color = col,
+                                                background = if (isActive && style.showWordHighlight) Color(style.highlightColor) else Color.Transparent,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = fontSizeSp
+                                            )
+                                        ) {
+                                            append(" ${wItem.word} ")
+                                        }
+                                        if (idx < words.size - 1) append(" ")
+                                    }
+                                }
+                                val layout = textMeasurer.measure(
+                                    text = fullAnnotated,
+                                    style = TextStyle(fontFamily = composeFontFamily, textAlign = TextAlign.Center),
+                                    constraints = androidx.compose.ui.unit.Constraints(maxWidth = (w * 0.9f).toInt())
+                                )
+                                drawText(textLayoutResult = layout, topLeft = Offset((w - layout.size.width) * 0.5f, centerY - layout.size.height * 0.5f))
+                            }
                             CaptionStyleTemplate.MINIMAL_PILL -> {
                                 val layout = textMeasurer.measure(
                                     text = AnnotatedString(textToRender),
@@ -263,7 +277,6 @@ fun VideoPreviewCanvas(
                                 val sx = (w - tw) * 0.5f
                                 val sy = centerY - (th * 0.5f)
 
-                                // Draw frosted pill
                                 drawRoundRect(
                                     color = Color(0xB012111D),
                                     topLeft = Offset(sx - 24f, sy - 14f),
@@ -324,7 +337,6 @@ fun VideoPreviewCanvas(
                                 val sx = (w - tw) * 0.5f
                                 val sy = centerY - (th * 0.5f)
 
-                                // Neon cyber border box
                                 drawRoundRect(
                                     color = Color(0x3300E5FF),
                                     topLeft = Offset(sx - 20f, sy - 12f),

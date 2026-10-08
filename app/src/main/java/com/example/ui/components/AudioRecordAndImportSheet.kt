@@ -32,13 +32,13 @@ import androidx.compose.ui.unit.sp
 fun AudioRecordAndImportSheet(
     isRecording: Boolean,
     recordingAmplitude: Int,
+    liveRecognizedText: String,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onAudioFileSelected: (Uri, String) -> Unit,
     onSelectSamplePreset: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
     var hasMicPermission by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -67,7 +67,7 @@ fun AudioRecordAndImportSheet(
             .verticalScroll(rememberScrollState())
     ) {
         Text(
-            text = "অডিও যুক্ত করুন বা ভয়েস রেকর্ড করুন",
+            text = "ভয়েস রেকর্ড বা অডিও আপলোড করুন",
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF00E5FF)
@@ -111,7 +111,7 @@ fun AudioRecordAndImportSheet(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "MP3, WAV, M4A, AAC যে কোনো সাইজের অডিও সমর্থন করে",
+                        text = "MP3, WAV, M4A, AAC যে কোনো সাইজের অডিও সরাসরি অটো-ক্যাপশন তৈরি করবে",
                         fontSize = 11.sp,
                         color = Color(0xFFAAA5C2)
                     )
@@ -139,20 +139,20 @@ fun AudioRecordAndImportSheet(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (isRecording) "রেকর্ডিং চলছে... আপনার বক্তব্য বলুন" else "সরাসরি মাইক্রোফোনে কথা রেকর্ড করুন",
+                    text = if (isRecording) "🔴 রেকর্ডিং চলছে... আপনার বক্তব্য বলুন" else "সরাসরি মাইক্রোফোনে কথা রেকর্ড করুন",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isRecording) Color(0xFFFF3D71) else Color.White
                 )
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Live waveform amplitude animation when recording
                 AnimatedVisibility(visible = isRecording) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(40.dp)
+                            .height(44.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color(0xFF141024))
                             .padding(horizontal = 8.dp),
@@ -178,7 +178,25 @@ fun AudioRecordAndImportSheet(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                // Show live captured words
+                if (liveRecognizedText.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF261E3D),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "লাইভ বক্তব্য: \"$liveRecognizedText\"",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFFFD600),
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Record / Stop Button
                 FilledIconButton(
@@ -206,7 +224,7 @@ fun AudioRecordAndImportSheet(
 
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = if (isRecording) "থামাতে ট্যাপ করুন (স্বয়ংক্রিয় ক্যাপশন হবে)" else "রেকর্ড শুরু করতে ট্যাপ করুন",
+                    text = if (isRecording) "থামাতে ট্যাপ করুন (স্বয়ংক্রিয় ক্যাপশন সিঙ্ক হবে)" else "রেকর্ড শুরু করতে ট্যাপ করুন",
                     fontSize = 11.sp,
                     color = Color(0xFFAAA5C2)
                 )

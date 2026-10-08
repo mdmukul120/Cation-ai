@@ -3,7 +3,7 @@ package com.example.model
 import java.util.UUID
 
 /**
- * Word-level timing for dynamic "Karaoke / Hormozi" active word highlighting
+ * Word-level timing for dynamic active word highlighting
  */
 data class WordTiming(
     val word: String,
@@ -60,13 +60,13 @@ enum class CaptionStyleTemplate(val displayName: String, val description: String
         displayName = "CapCut Bounce",
         description = "Modern sans-serif with smooth scaling bounce on active spoken word"
     ),
-    MINIMAL_PILL(
-        displayName = "Minimal Pill",
-        description = "Sleek translucent glass pill background with clean elegant typography"
-    ),
     KARAOKE_FLOW(
         displayName = "Karaoke Flow",
         description = "Progressive vibrant cyan color flow matching speech pace"
+    ),
+    MINIMAL_PILL(
+        displayName = "Minimal Pill",
+        description = "Sleek translucent glass pill background with clean elegant typography"
     ),
     NEON_CYBER(
         displayName = "Neon Cyber",
@@ -75,6 +75,10 @@ enum class CaptionStyleTemplate(val displayName: String, val description: String
     CINEMATIC(
         displayName = "Cinematic Classic",
         description = "Subtle letterboxed serif with understated elegance"
+    ),
+    BOXED_HIGHLIGHT(
+        displayName = "Boxed Accent",
+        description = "Active word has a vibrant solid contrast highlight badge"
     )
 }
 
@@ -97,6 +101,7 @@ enum class BackgroundPreset(val title: String) {
     CYBER_PULSE("Deep Purple"),
     MINIMAL_BLACK("OLED Black"),
     SOLID_EMERALD("Emerald"),
+    SOLID_CUSTOM("Solid Color"),
     CUSTOM_MEDIA("Custom Image")
 }
 
@@ -105,10 +110,12 @@ enum class BackgroundPreset(val title: String) {
  */
 enum class FontFamilyPreset(val title: String) {
     SANS_BOLD("Bold Headline"),
+    BANGLA_CALLIGRAPHIC("Stylized Bangla (লিপি)"),
+    BANGLA_MODERN("Modern Bangla (বাংলা)"),
     MODERN_SANS("Modern Sans"),
     ELEGANT_SERIF("Elegant Serif"),
     MONOSPACE("Monospace Tech"),
-    BANGLA_CALLIGRAPHIC("Stylized Bangla")
+    HEAVY_IMPACT("Heavy Impact")
 }
 
 /**
@@ -118,9 +125,10 @@ data class VideoStyle(
     val template: CaptionStyleTemplate = CaptionStyleTemplate.HORMOZI_PUNCH,
     val aspectRatio: VideoAspectRatio = VideoAspectRatio.NINE_SIXTEEN,
     val backgroundPreset: BackgroundPreset = BackgroundPreset.DARK_STUDIO,
+    val customSolidBgColor: Long = 0xFF121028,
     val customMediaUri: String? = null,
     val fontFamily: FontFamilyPreset = FontFamilyPreset.SANS_BOLD,
-    val fontSizeSp: Int = 24,
+    val fontSizeSp: Int = 26,
     val textColor: Long = 0xFFFFFFFF,
     val highlightColor: Long = 0xFFFFEB3B, // Bright yellow
     val strokeColor: Long = 0xFF000000,

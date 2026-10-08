@@ -28,9 +28,6 @@ class GeminiService {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    /**
-     * Resolves Gemini API Key: custom key passed in, or fallback to BuildConfig.GEMINI_API_KEY
-     */
     private fun getEffectiveKey(customKey: String?): String {
         return if (!customKey.isNullOrBlank()) {
             customKey.trim()
@@ -44,44 +41,67 @@ class GeminiService {
      */
     suspend fun generateSpeechSummary(
         transcriptOrTopic: String,
+        audioFile: File? = null,
         customApiKey: String? = null
     ): Result<AudioSummary> = withContext(Dispatchers.IO) {
         val apiKey = getEffectiveKey(customApiKey)
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            // Intelligent fallback summary based on input
             return@withContext Result.success(createSmartFallbackSummary(transcriptOrTopic))
         }
 
         try {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
 
             val prompt = """
-                Analyze this audio transcript / speech text:
-                "$transcriptOrTopic"
+                Listen to this audio voice and analyze the speech content.
+                ${if (transcriptOrTopic.isNotBlank()) "Reference words: \"$transcriptOrTopic\"" else ""}
 
                 Return a JSON object with this exact structure:
                 {
                   "headline": "Catchy short headline in Bengali & English (e.g. স্বপ্নের পথে অবিচল যাত্রা | The Unstoppable Journey)",
                   "summaryBn": "A 2-3 sentence engaging summary in Bengali",
                   "summaryEn": "A 2-3 sentence engaging summary in English",
-                  "keyPoints": ["Bullet 1 in Bengali", "Bullet 2 in Bengali", "Bullet 3 in Bengali"],
+                  "keyPoints": ["Point 1 in Bengali", "Point 2 in Bengali", "Point 3 in Bengali"],
                   "sentiment": "e.g. Inspiring, Energetic, Emotional",
                   "detectedLanguage": "Bengali / English"
                 }
                 Provide only raw JSON.
             """.trimIndent()
 
-            val requestBodyJson = JSONObject().apply {
-                put("contents", JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("parts", JSONArray().apply {
-                            put(JSONObject().put("text", prompt))
+            val partsArray = JSONArray()
+
+            // If audio file exists, attach actual audio data to Gemini
+            if (audioFile != null && audioFile.exists() && audioFile.length() < 12 * 1024 * 1024) {
+                try {
+                    val bytes = audioFile.readBytes()
+                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    val mime = when {
+                        audioFile.name.endsWith(".wav", true) -> "audio/wav"
+                        audioFile.name.endsWith(".m4a", true) || audioFile.name.endsWith(".mp4", true) -> "audio/mp4"
+                        audioFile.name.endsWith(".aac", true) -> "audio/aac"
+                        audioFile.name.endsWith(".ogg", true) -> "audio/ogg"
+                        else -> "audio/mp3"
+                    }
+                    partsArray.put(JSONObject().apply {
+                        put("inlineData", JSONObject().apply {
+                            put("mimeType", mime)
+                            put("data", base64)
                         })
                     })
+                } catch (e: Exception) {
+                    Log.w("GeminiService", "Inline audio encode failed: ${e.message}")
+                }
+            }
+
+            partsArray.put(JSONObject().put("text", prompt))
+
+            val requestBodyJson = JSONObject().apply {
+                put("contents", JSONArray().apply {
+                    put(JSONObject().put("parts", partsArray))
                 })
                 put("generationConfig", JSONObject().apply {
                     put("responseMimeType", "application/json")
-                    put("temperature", 0.4)
+                    put("temperature", 0.3)
                 })
             }
 
@@ -135,13 +155,13 @@ class GeminiService {
                 )
             )
         } catch (e: Exception) {
-            Log.e("GeminiService", "Exception calling Gemini: ${e.message}", e)
+            Log.e("GeminiService", "Exception calling Gemini summary: ${e.message}", e)
             Result.success(createSmartFallbackSummary(transcriptOrTopic))
         }
     }
 
     /**
-     * Generates synchronized caption segments with word-level timestamps using Gemini
+     * Transcribes audio voice and generates synchronized caption segments with word-level timestamps using Gemini
      */
     suspend fun generateSyncedCaptions(
         audioTextOrFile: String,
@@ -158,37 +178,45 @@ class GeminiService {
             val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
 
             val prompt = """
-                The audio duration is $audioDurationMs milliseconds.
-                Generate synchronized subtitle caption segments with word-level timings for this speech text:
-                "$audioTextOrFile"
+                You are an expert audio speech transcriber and subtitler.
+                Total audio duration: $audioDurationMs milliseconds.
+                ${if (audioTextOrFile.isNotBlank()) "Reference spoken text: \"$audioTextOrFile\"" else ""}
 
-                Divide into short, punchy 3-6 word phrases suitable for TikTok / Instagram Reels / YouTube Shorts captions.
-                Return a JSON array of segments strictly formatted as:
+                Instructions:
+                1. Listen to the audio and transcribe every spoken word in its exact spoken language (Bengali or English).
+                2. Divide the speech into short, dynamic subtitle phrases (3-6 words per phrase) suitable for TikTok, Instagram Reels, and YouTube Shorts captions.
+                3. For each phrase, calculate the exact millisecond start time (startMs) and end time (endMs), as well as word-by-word timestamps (words).
+                4. Start timestamps must strictly start at 0ms and end at or before $audioDurationMs ms.
+
+                Return a JSON array formatted as:
                 [
                   {
                     "startMs": 0,
                     "endMs": 2800,
-                    "text": "স্বপ্ন দেখতে ভয় পেয়ো না",
+                    "text": "spoken phrase here",
                     "words": [
-                      {"word": "স্বপ্ন", "startMs": 0, "endMs": 700},
-                      {"word": "দেখতে", "startMs": 700, "endMs": 1400},
-                      {"word": "ভয়", "startMs": 1400, "endMs": 2000},
-                      {"word": "পেয়ো", "startMs": 2000, "endMs": 2500},
-                      {"word": "না", "startMs": 2500, "endMs": 2800}
+                      {"word": "word1", "startMs": 0, "endMs": 700},
+                      {"word": "word2", "startMs": 700, "endMs": 1400}
                     ]
                   }
                 ]
-                Start times must start from 0 and not exceed $audioDurationMs ms. Return only the raw JSON array.
+                Return ONLY the raw JSON array.
             """.trimIndent()
 
             val partsArray = JSONArray()
 
-            // If audio file exists and is small enough, attach inline audio
-            if (audioFile != null && audioFile.exists() && audioFile.length() < 8 * 1024 * 1024) {
+            // If audio file exists, attach actual audio data
+            if (audioFile != null && audioFile.exists() && audioFile.length() < 12 * 1024 * 1024) {
                 try {
                     val bytes = audioFile.readBytes()
                     val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    val mime = if (audioFile.name.endsWith(".wav", true)) "audio/wav" else "audio/mp4"
+                    val mime = when {
+                        audioFile.name.endsWith(".wav", true) -> "audio/wav"
+                        audioFile.name.endsWith(".m4a", true) || audioFile.name.endsWith(".mp4", true) -> "audio/mp4"
+                        audioFile.name.endsWith(".aac", true) -> "audio/aac"
+                        audioFile.name.endsWith(".ogg", true) -> "audio/ogg"
+                        else -> "audio/mp3"
+                    }
                     partsArray.put(JSONObject().apply {
                         put("inlineData", JSONObject().apply {
                             put("mimeType", mime)
@@ -235,7 +263,7 @@ class GeminiService {
             for (i in 0 until jsonArray.length()) {
                 val segObj = jsonArray.optJSONObject(i) ?: continue
                 val startMs = segObj.optLong("startMs", 0L)
-                val endMs = segObj.optLong("endMs", startMs + 2000L)
+                val endMs = segObj.optLong("endMs", startMs + 2000L).coerceAtMost(audioDurationMs)
                 val segText = segObj.optString("text", "")
                 val wordsList = mutableListOf<WordTiming>()
 
@@ -252,7 +280,6 @@ class GeminiService {
                         )
                     }
                 } else {
-                    // Split text into words automatically
                     val rawWords = segText.split("\\s+".toRegex()).filter { it.isNotBlank() }
                     val wordSpan = if (rawWords.isNotEmpty()) (endMs - startMs) / rawWords.size else 0L
                     rawWords.forEachIndexed { idx, w ->
@@ -289,12 +316,13 @@ class GeminiService {
     }
 
     /**
-     * Smart synchronized caption generator with word timings for offline / demo mode
+     * Smart synchronized caption generator with word timings
      */
     fun createSmartSynchronizedCaptions(text: String, durationMs: Long): List<CaptionSegment> {
-        val totalMs = durationMs.coerceAtLeast(6000L)
-        val defaultSentences = if (text.isNotBlank() && text.length > 10) {
-            text.split("[।!?.\n]+".toRegex()).map { it.trim() }.filter { it.length > 2 }
+        val totalMs = durationMs.coerceAtLeast(2000L)
+        val defaultSentences = if (text.isNotBlank() && text.length > 6) {
+            val rawSplit = text.split("[।!?.\n]+".toRegex()).map { it.trim() }.filter { it.length > 1 }
+            if (rawSplit.isNotEmpty()) rawSplit else listOf(text)
         } else {
             listOf(
                 "স্বপ্ন দেখতে কখনো ভয় পেয়ো না",
@@ -340,15 +368,15 @@ class GeminiService {
 
     fun createSmartFallbackSummary(text: String): AudioSummary {
         val bnSummary = if (text.isNotBlank() && text.length > 20) {
-            "এই বক্তব্যটিতে আত্মবিশ্বাস, অনুপ্রেরণা এবং অধ্যবসায়ের মাধ্যমে অভীষ্ট লক্ষ্যে পৌঁছানোর গুরুত্ব তুলে ধরা হয়েছে।"
+            "বক্তব্যের মূল বিষয়: \"$text\"। এতে বাস্তব জীবনের গভীর তাৎপর্য ও বার্তা প্রকাশ পেয়েছে।"
         } else {
             "স্বপ্নপূরণ ও অটল সংকল্পের মাধ্যমে যেকোনো প্রতিকূলতা জয় করার এক অনুপ্রেরণাদায়ী বার্তা।"
         }
 
         return AudioSummary(
-            headline = "স্বপ্নের পথে অবিচল বিজয় | The Power of Persistence",
+            headline = "বক্তব্যের সারসংক্ষেপ | Voice Summary",
             summaryBn = bnSummary,
-            summaryEn = "An inspiring message highlighting the transformative power of self-belief, disciplined action, and unwavering determination.",
+            summaryEn = "An inspiring message highlighting the transformative power of self-belief, disciplined action, and determination.",
             keyPoints = listOf(
                 "বাধার মুখে ধৈর্য ও সাহসের সাথে অবিচল থাকা",
                 "প্রতিদিনের ছোট ছোট প্রচেষ্টা বিরাট সাফল্য এনে দেয়",

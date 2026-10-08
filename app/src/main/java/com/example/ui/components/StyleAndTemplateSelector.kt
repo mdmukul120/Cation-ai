@@ -30,9 +30,11 @@ fun StyleAndTemplateSelector(
     onTemplateSelect: (CaptionStyleTemplate) -> Unit,
     onAspectRatioSelect: (VideoAspectRatio) -> Unit,
     onBackgroundSelect: (BackgroundPreset) -> Unit,
+    onCustomSolidBgChange: (Long) -> Unit,
     onFontSelect: (FontFamilyPreset) -> Unit,
     onFontSizeChange: (Int) -> Unit,
     onVerticalOffsetChange: (Float) -> Unit,
+    onTextColorChange: (Long) -> Unit,
     onHighlightColorChange: (Long) -> Unit,
     onToggleAllCaps: (Boolean) -> Unit,
     onToggleWordHighlight: (Boolean) -> Unit,
@@ -109,7 +111,7 @@ fun StyleAndTemplateSelector(
 
         // --- 2. Video Aspect Ratio ---
         Text(
-            text = "ভিডিও রেশিও (Aspect Ratio)",
+            text = "ভিডিও সাইজ ও ফরম্যাট (Aspect Ratio)",
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
             color = Color.White
@@ -138,7 +140,7 @@ fun StyleAndTemplateSelector(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // --- 3. Background Aesthetic Presets ---
+        // --- 3. Background Aesthetic Presets & Colors ---
         Text(
             text = "ভিডিও ব্যাকগ্রাউন্ড প্রিসেট",
             fontSize = 14.sp,
@@ -167,11 +169,54 @@ fun StyleAndTemplateSelector(
             }
         }
 
+        // Custom solid background color palette if SOLID_CUSTOM selected
+        if (style.backgroundPreset == BackgroundPreset.SOLID_CUSTOM) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(text = "ব্যাকগ্রাউন্ডের সলিড কালার নির্বাচন করুন:", fontSize = 12.sp, color = Color(0xFFAAA5C2))
+            Spacer(modifier = Modifier.height(6.dp))
+
+            val solidBgColors = listOf(
+                0xFF000000, // OLED Black
+                0xFF121028, // Deep Indigo
+                0xFF1C0D2E, // Royal Violet
+                0xFF2D0F1A, // Deep Crimson
+                0xFF0C241B, // Emerald
+                0xFF0D2538, // Navy Blue
+                0xFF24221A  // Charcoal Gold
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                solidBgColors.forEach { colLong ->
+                    val isSel = style.customSolidBgColor == colLong
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(colLong))
+                            .clickable { onCustomSolidBgChange(colLong) }
+                            .border(
+                                width = if (isSel) 3.dp else 1.dp,
+                                color = if (isSel) Color(0xFF00E5FF) else Color(0x66FFFFFF),
+                                shape = CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSel) {
+                            Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
 
-        // --- 4. Font Typography ---
+        // --- 4. Font Typography (Bangla & English Fonts) ---
         Text(
-            text = "ফন্ট স্টাইল (Typography)",
+            text = "ফন্ট স্টাইল (Typography & Bangla Fonts)",
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
             color = Color.White
@@ -211,8 +256,8 @@ fun StyleAndTemplateSelector(
         Slider(
             value = style.fontSizeSp.toFloat(),
             onValueChange = { onFontSizeChange(it.toInt()) },
-            valueRange = 16f..36f,
-            steps = 20,
+            valueRange = 16f..40f,
+            steps = 24,
             colors = SliderDefaults.colors(
                 thumbColor = Color(0xFF00E5FF),
                 activeTrackColor = Color(0xFF00E5FF)
@@ -226,7 +271,7 @@ fun StyleAndTemplateSelector(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = "সাবটাইটেল পজিশন (উল্লম্ব অবস্থান)", fontSize = 13.sp, color = Color(0xFFCCC8E0))
+            Text(text = "সাবটাইটেল পজিশন (উপরে / নিচে স্লাইড)", fontSize = 13.sp, color = Color(0xFFCCC8E0))
         }
         Slider(
             value = style.verticalOffset,
@@ -238,7 +283,7 @@ fun StyleAndTemplateSelector(
             )
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // --- 6. Active Highlight Colors ---
         Text(
@@ -255,12 +300,13 @@ fun StyleAndTemplateSelector(
             0xFFFF3D71, // Vibrant Coral
             0xFF00E676, // Bright Lime
             0xFFFF9100, // Punch Orange
+            0xFFD500F9, // Vivid Violet
             0xFFFFFFFF  // Crisp White
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             highlightColors.forEach { colLong ->
                 val isSelected = style.highlightColor == colLong
@@ -278,12 +324,7 @@ fun StyleAndTemplateSelector(
                     contentAlignment = Alignment.Center
                 ) {
                     if (isSelected) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = Color.Black,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -291,7 +332,52 @@ fun StyleAndTemplateSelector(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- 7. Toggles ---
+        // --- 7. Text Primary Color ---
+        Text(
+            text = "মূল টেক্সট কালার",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        val textColors = listOf(
+            0xFFFFFFFF, // Pure White
+            0xFFFFFDE7, // Warm Off-White
+            0xFFE0F7FA, // Light Cyan Tint
+            0xFFFFEBEE, // Soft Pink Tint
+            0xFFE8EAF6  // Cool Indigo Tint
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            textColors.forEach { colLong ->
+                val isSelected = style.textColor == colLong
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(colLong))
+                        .clickable { onTextColorChange(colLong) }
+                        .border(
+                            width = if (isSelected) 3.dp else 1.dp,
+                            color = if (isSelected) Color(0xFF00E5FF) else Color(0x66FFFFFF),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isSelected) {
+                        Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // --- 8. Toggles ---
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -313,7 +399,7 @@ fun StyleAndTemplateSelector(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = "শব্দভিত্তিক হাইলাইট এনিমেশন", fontSize = 13.sp, color = Color.White)
+            Text(text = "শব্দভিত্তিক রিয়েল-টাইম হাইলাইট", fontSize = 13.sp, color = Color.White)
             Switch(
                 checked = style.showWordHighlight,
                 onCheckedChange = onToggleWordHighlight,

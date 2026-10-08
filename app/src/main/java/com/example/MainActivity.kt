@@ -51,6 +51,7 @@ fun CapGrokApp(viewModel: EditorViewModel) {
     val currentPositionMs by viewModel.audioService.currentPositionMs.collectAsStateWithLifecycle()
     val isRecording by viewModel.audioService.isRecording.collectAsStateWithLifecycle()
     val recordingAmplitude by viewModel.audioService.recordingAmplitude.collectAsStateWithLifecycle()
+    val liveRecognizedText by viewModel.audioService.liveRecognizedText.collectAsStateWithLifecycle()
     val isAiProcessing by viewModel.isAiProcessing.collectAsStateWithLifecycle()
     val aiStatusMessage by viewModel.aiStatusMessage.collectAsStateWithLifecycle()
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
@@ -260,9 +261,11 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                             onTemplateSelect = { viewModel.setTemplate(it) },
                             onAspectRatioSelect = { viewModel.setAspectRatio(it) },
                             onBackgroundSelect = { viewModel.setBackground(it) },
+                            onCustomSolidBgChange = { viewModel.setCustomSolidBgColor(it) },
                             onFontSelect = { viewModel.setFont(it) },
                             onFontSizeChange = { viewModel.setFontSize(it) },
                             onVerticalOffsetChange = { viewModel.setVerticalOffset(it) },
+                            onTextColorChange = { viewModel.setTextColor(it) },
                             onHighlightColorChange = { viewModel.updateStyle { s -> s.copy(highlightColor = it) } },
                             onToggleAllCaps = { viewModel.updateStyle { s -> s.copy(allCaps = it) } },
                             onToggleWordHighlight = { viewModel.updateStyle { s -> s.copy(showWordHighlight = it) } },
@@ -277,9 +280,11 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                             processingMessage = aiStatusMessage,
                             onReAnalyzeClick = {
                                 val transcript = project.captions.joinToString(" ") { it.text }
+                                val audioF = project.audioUri?.let { java.io.File(it) }
                                 viewModel.runAiProcessing(
                                     transcriptPrompt = transcript,
-                                    durationMs = project.audioDurationMs
+                                    durationMs = project.audioDurationMs,
+                                    audioFile = audioF
                                 )
                             },
                             modifier = Modifier.fillMaxSize()
@@ -289,6 +294,7 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                         AudioRecordAndImportSheet(
                             isRecording = isRecording,
                             recordingAmplitude = recordingAmplitude,
+                            liveRecognizedText = liveRecognizedText,
                             onStartRecording = { viewModel.startRecording() },
                             onStopRecording = { viewModel.stopRecordingAndImport() },
                             onAudioFileSelected = { uri, name ->

@@ -1,11 +1,17 @@
 package com.example.service
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
+import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,12 +19,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
-import java.io.RandomAccessFile
+import java.util.Locale
 
 class AudioService(private val context: Context) {
 
     private var mediaPlayer: MediaPlayer? = null
     private var mediaRecorder: MediaRecorder? = null
+    private var speechRecognizer: SpeechRecognizer? = null
     private var currentRecordedFile: File? = null
 
     private val _isPlaying = MutableStateFlow(false)
@@ -35,6 +42,10 @@ class AudioService(private val context: Context) {
 
     private val _recordingAmplitude = MutableStateFlow(0)
     val recordingAmplitude: StateFlow<Int> = _recordingAmplitude.asStateFlow()
+
+    // Live speech recognition text as user speaks into mic
+    private val _liveRecognizedText = MutableStateFlow("")
+    val liveRecognizedText: StateFlow<String> = _liveRecognizedText.asStateFlow()
 
     private var progressJob: Job? = null
     private var recordingAmplitudeJob: Job? = null
@@ -63,7 +74,10 @@ class AudioService(private val context: Context) {
                 prepare()
             }
             mediaPlayer = player
-            _durationMs.value = player.duration.toLong().coerceAtLeast(durationHintMs)
+
+            // Accurate duration from MediaPlayer or MediaMetadataRetriever
+            val accurateDuration = player.duration.toLong().coerceAtLeast(getAccurateDuration(uriString))
+            _durationMs.value = accurateDuration.coerceAtLeast(durationHintMs)
             _currentPositionMs.value = 0L
 
             player.setOnCompletionListener {
@@ -73,8 +87,53 @@ class AudioService(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e("AudioService", "Error loading audio: ${e.message}", e)
-            _durationMs.value = durationHintMs.coerceAtLeast(15000L)
+            val dur = getAccurateDuration(uriString).coerceAtLeast(durationHintMs).coerceAtLeast(10000L)
+            _durationMs.value = dur
         }
+    }
+
+    fun getAccurateDuration(uriOrPath: String?): Long {
+        if (uriOrPath.isNullOrBlank()) return 0L
+        return try {
+            val retriever = MediaMetadataRetriever()
+            if (uriOrPath.startsWith("/")) {
+                retriever.setDataSource(uriOrPath)
+            } else {
+                retriever.setDataSource(context, Uri.parse(uriOrPath))
+            }
+            val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            retriever.release()
+            durStr?.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    /**
+     * Copies a content:// URI from SAF to a local cache file so that MediaExtractor
+     * and Gemini API can access direct file descriptors.
+     */
+    fun copyUriToLocalFile(uri: Uri): File {
+        val extension = try {
+            val mime = context.contentResolver.getType(uri)
+            when {
+                mime?.contains("wav", true) == true -> "wav"
+                mime?.contains("mp4", true) == true || mime?.contains("m4a", true) == true -> "m4a"
+                mime?.contains("aac", true) == true -> "aac"
+                mime?.contains("ogg", true) == true -> "ogg"
+                else -> "mp3"
+            }
+        } catch (_: Exception) {
+            "mp3"
+        }
+
+        val cacheFile = File(context.cacheResolverDir(), "imported_audio_${System.currentTimeMillis()}.$extension")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(cacheFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        return cacheFile
     }
 
     fun play() {
@@ -169,10 +228,11 @@ class AudioService(private val context: Context) {
         progressJob = null
     }
 
-    // --- Voice Recording ---
+    // --- Voice Recording with Live Speech Recognition ---
 
     fun startRecording(): File? {
         stopPlayback()
+        _liveRecognizedText.value = ""
         try {
             val outFile = File(context.cacheResolverDir(), "recorded_voice_${System.currentTimeMillis()}.m4a")
             currentRecordedFile = outFile
@@ -208,6 +268,10 @@ class AudioService(private val context: Context) {
                     delay(100)
                 }
             }
+
+            // Start On-device Speech Recognizer for real-time live captions
+            startOnDeviceSpeechRecognition()
+
             return outFile
         } catch (e: Exception) {
             Log.e("AudioService", "Failed to start recording: ${e.message}", e)
@@ -216,8 +280,57 @@ class AudioService(private val context: Context) {
         }
     }
 
+    private fun startOnDeviceSpeechRecognition() {
+        try {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {}
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() {}
+                        override fun onError(error: Int) {
+                            Log.w("AudioService", "SpeechRecognizer error: $error")
+                        }
+                        override fun onResults(results: Bundle?) {
+                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                _liveRecognizedText.value = matches[0]
+                            }
+                        }
+                        override fun onPartialResults(partialResults: Bundle?) {
+                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                _liveRecognizedText.value = matches[0]
+                            }
+                        }
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
+                }
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bn-BD")
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "bn-BD")
+                    putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                }
+                speechRecognizer?.startListening(intent)
+            }
+        } catch (e: Exception) {
+            Log.w("AudioService", "SpeechRecognizer setup exception: ${e.message}")
+        }
+    }
+
     fun stopRecording(): File? {
         recordingAmplitudeJob?.cancel()
+        try {
+            speechRecognizer?.stopListening()
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {}
+        speechRecognizer = null
+
         try {
             mediaRecorder?.apply {
                 stop()
@@ -234,7 +347,6 @@ class AudioService(private val context: Context) {
 
     /**
      * Synthesizes a valid, playable WAV audio file with pleasant musical speech tones
-     * so demo projects can play actual sound on emulator/device immediately!
      */
     fun createSyntheticAudioFile(durationSeconds: Int = 18): File {
         val file = File(context.cacheResolverDir(), "demo_voice_${durationSeconds}s.wav")
@@ -244,13 +356,10 @@ class AudioService(private val context: Context) {
         val numSamples = durationSeconds * sampleRate
         val pcmData = ByteArray(numSamples * 2)
 
-        // Generate expressive voice-like formant modulated tone
         var idx = 0
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
-            // Syllabic modulation simulating natural speech cadence (3-4 syllables per second)
             val cadence = kotlin.math.sin(2.0 * Math.PI * 3.5 * t).coerceAtLeast(0.0)
-            // Vocal pitch around 160-220 Hz
             val pitch = 180.0 + 25.0 * kotlin.math.sin(2.0 * Math.PI * 0.8 * t)
             val wave = kotlin.math.sin(2.0 * Math.PI * pitch * t) * 0.7 +
                     kotlin.math.sin(2.0 * Math.PI * (pitch * 2) * t) * 0.3
@@ -261,7 +370,6 @@ class AudioService(private val context: Context) {
         }
 
         FileOutputStream(file).use { out ->
-            // Write standard WAV header (44 bytes)
             val totalDataLen = pcmData.size + 36
             val byteRate = sampleRate * 2
 
@@ -273,9 +381,9 @@ class AudioService(private val context: Context) {
             header[7] = ((totalDataLen shr 24) and 0xff).toByte()
             header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte(); header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
             header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte(); header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
-            header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0 // Subchunk1Size (16 for PCM)
-            header[20] = 1; header[21] = 0 // AudioFormat (1 is PCM)
-            header[22] = 1; header[23] = 0 // NumChannels (1 mono)
+            header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0
+            header[20] = 1; header[21] = 0
+            header[22] = 1; header[23] = 0
             header[24] = (sampleRate and 0xff).toByte()
             header[25] = ((sampleRate shr 8) and 0xff).toByte()
             header[26] = ((sampleRate shr 16) and 0xff).toByte()
@@ -284,8 +392,8 @@ class AudioService(private val context: Context) {
             header[29] = ((byteRate shr 8) and 0xff).toByte()
             header[30] = ((byteRate shr 16) and 0xff).toByte()
             header[31] = ((byteRate shr 24) and 0xff).toByte()
-            header[32] = 2; header[33] = 0 // BlockAlign
-            header[34] = 16; header[35] = 0 // BitsPerSample
+            header[32] = 2; header[33] = 0
+            header[34] = 16; header[35] = 0
             header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
             header[40] = (pcmData.size and 0xff).toByte()
             header[41] = ((pcmData.size shr 8) and 0xff).toByte()
