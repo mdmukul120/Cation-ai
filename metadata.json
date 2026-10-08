@@ -1,0 +1,6 @@
+{
+  "name": "CapGrok",
+  "description": "AI-powered voice analysis and synchronized caption video editor using Grok and Gemini with CapCut-style templates and fast video rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
