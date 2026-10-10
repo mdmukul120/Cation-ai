@@ -51,10 +51,14 @@ class AudioService(private val context: Context) {
     private var recordingAmplitudeJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    private var recordingStartTimeMs: Long = 0L
+    var lastRecordedDurationMs: Long = 0L
+        private set
+
     fun loadAudio(uriString: String?, durationHintMs: Long = 0L) {
         stopPlayback()
         if (uriString.isNullOrBlank()) {
-            _durationMs.value = durationHintMs
+            _durationMs.value = durationHintMs.coerceAtLeast(1000L)
             return
         }
 
@@ -76,8 +80,15 @@ class AudioService(private val context: Context) {
             mediaPlayer = player
 
             // Accurate duration from MediaPlayer or MediaMetadataRetriever
-            val accurateDuration = player.duration.toLong().coerceAtLeast(getAccurateDuration(uriString))
-            _durationMs.value = accurateDuration.coerceAtLeast(durationHintMs)
+            val playerDur = player.duration.toLong()
+            val metaDur = getAccurateDuration(uriString)
+            val accurateDuration = when {
+                playerDur > 0 -> playerDur
+                metaDur > 0 -> metaDur
+                durationHintMs > 0 -> durationHintMs
+                else -> 1000L
+            }
+            _durationMs.value = accurateDuration.coerceAtLeast(500L)
             _currentPositionMs.value = 0L
 
             player.setOnCompletionListener {
@@ -87,8 +98,13 @@ class AudioService(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e("AudioService", "Error loading audio: ${e.message}", e)
-            val dur = getAccurateDuration(uriString).coerceAtLeast(durationHintMs).coerceAtLeast(10000L)
-            _durationMs.value = dur
+            val metaDur = getAccurateDuration(uriString)
+            val dur = when {
+                metaDur > 0 -> metaDur
+                durationHintMs > 0 -> durationHintMs
+                else -> 1000L
+            }
+            _durationMs.value = dur.coerceAtLeast(500L)
         }
     }
 
@@ -167,6 +183,20 @@ class AudioService(private val context: Context) {
         stopProgressTracking()
     }
 
+    fun setSpeed(speed: Float) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                mediaPlayer?.let { player ->
+                    val params = player.playbackParams
+                    params.speed = speed.coerceIn(0.5f, 2.5f)
+                    player.playbackParams = params
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("AudioService", "Error setting playback speed: ${e.message}")
+        }
+    }
+
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceIn(0L, _durationMs.value.coerceAtLeast(1000L))
         _currentPositionMs.value = clamped
@@ -233,6 +263,7 @@ class AudioService(private val context: Context) {
     fun startRecording(): File? {
         stopPlayback()
         _liveRecognizedText.value = ""
+        recordingStartTimeMs = System.currentTimeMillis()
         try {
             val outFile = File(context.cacheResolverDir(), "recorded_voice_${System.currentTimeMillis()}.m4a")
             currentRecordedFile = outFile
@@ -324,6 +355,8 @@ class AudioService(private val context: Context) {
     }
 
     fun stopRecording(): File? {
+        val elapsed = if (recordingStartTimeMs > 0) System.currentTimeMillis() - recordingStartTimeMs else 0L
+        lastRecordedDurationMs = elapsed
         recordingAmplitudeJob?.cancel()
         try {
             speechRecognizer?.stopListening()

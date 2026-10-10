@@ -38,6 +38,9 @@ fun StyleAndTemplateSelector(
     onHighlightColorChange: (Long) -> Unit,
     onToggleAllCaps: (Boolean) -> Unit,
     onToggleWordHighlight: (Boolean) -> Unit,
+    onColorLutSelect: (ColorGradingLut) -> Unit,
+    onToggleVignette: (Boolean) -> Unit,
+    onToggleLetterbox: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -403,6 +406,104 @@ fun StyleAndTemplateSelector(
             Switch(
                 checked = style.showWordHighlight,
                 onCheckedChange = onToggleWordHighlight,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color(0xFFFFD600),
+                    checkedTrackColor = Color(0xFF423B18)
+                )
+            )
+        }
+
+        Spacer(modifier = Modifier.height(22.dp))
+
+        // --- 9. Premiere Pro Lumetri Color Grading (LUTs) ---
+        Text(
+            text = "কালার গ্রেডিং ও সিনেমাটিক লুক (Lumetri LUTs)",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF00E5FF)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(ColorGradingLut.entries) { lut ->
+                val isSelected = style.colorLut == lut
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) Color(0xFF2C2448) else Color(0xFF1E1A30),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) Color(0xFFFFD600) else Color(0xFF332D4E)
+                    ),
+                    modifier = Modifier
+                        .width(135.dp)
+                        .clickable { onColorLutSelect(lut) }
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = lut.title,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSelected) Color(0xFFFFD600) else Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = lut.description,
+                            fontSize = 10.sp,
+                            color = Color(0xFFAAA5C2),
+                            lineHeight = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // --- 10. Cinematic Camera Overlays ---
+        Text(
+            text = "সিনেমা ওভারলে ও অপটিক্যাল ইফেক্ট",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = "সিনেমা লেটারবক্স বার (2.39:1 CinemaScope)", fontSize = 13.sp, color = Color.White)
+                Text(text = "হলিউড ড্রামাটিক ব্ল্যাক বার ফ্রেম", fontSize = 10.sp, color = Color(0xFFAAA5C2))
+            }
+            Switch(
+                checked = style.enableLetterboxBars,
+                onCheckedChange = onToggleLetterbox,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color(0xFF00E5FF),
+                    checkedTrackColor = Color(0xFF1E3A4B)
+                )
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = "ভিনিগেট শ্যাডো (Vignette)", fontSize = 13.sp, color = Color.White)
+                Text(text = "কোণায় সফট সিনেমাটিক ডার্কেনিং", fontSize = 10.sp, color = Color(0xFFAAA5C2))
+            }
+            Switch(
+                checked = style.enableVignette,
+                onCheckedChange = onToggleVignette,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color(0xFFFFD600),
                     checkedTrackColor = Color(0xFF423B18)

@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -62,6 +63,7 @@ fun CapGrokApp(viewModel: EditorViewModel) {
     var showExportDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showAddCaptionDialog by remember { mutableStateOf(false) }
+    var showSpeedDurationDialog by remember { mutableStateOf(false) }
 
     val editingSegment = project.captions.find { it.id == selectedSegmentId }
 
@@ -77,40 +79,85 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                             color = Color(0xFF00E5FF),
                             modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Subtitles,
-                                contentDescription = null,
-                                tint = Color(0xFF0C0A14),
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(6.dp)
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "Fc",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color(0xFF0C0A14)
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "FilmCraft Pro",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFFFFD600)
+                                ) {
+                                    Text(
+                                        text = "PREMIERE",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color.Black,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
                             Text(
-                                text = "CapGrok",
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.Black,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "Grok Voice + Gemini AI",
+                                text = "Professional AI Video & Caption Studio",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = Color(0xFFFFD600)
+                                color = Color(0xFFAAA5C2)
                             )
                         }
                     }
                 },
                 actions = {
+                    // Quick Duration Pill (clickable to adjust duration/speed)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF25203D),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3E365E)),
+                        modifier = Modifier
+                            .clickable { showSpeedDurationDialog = true }
+                            .testTag("duration_top_pill")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = "Video duration",
+                                tint = Color(0xFFFFD600),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = String.format(java.util.Locale.US, "%.1fs", project.effectiveDurationMs / 1000f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+
                     // Aspect ratio quick switch
                     IconButton(
                         onClick = {
                             val nextRatio = when (project.style.aspectRatio) {
                                 VideoAspectRatio.NINE_SIXTEEN -> VideoAspectRatio.ONE_ONE
                                 VideoAspectRatio.ONE_ONE -> VideoAspectRatio.SIXTEEN_NINE
-                                VideoAspectRatio.SIXTEEN_NINE -> VideoAspectRatio.NINE_SIXTEEN
+                                VideoAspectRatio.SIXTEEN_NINE -> VideoAspectRatio.ANAMORPHIC
+                                VideoAspectRatio.ANAMORPHIC -> VideoAspectRatio.NINE_SIXTEEN
                             }
                             viewModel.setAspectRatio(nextRatio)
                         },
@@ -145,7 +192,7 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                         ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier
-                            .padding(end = 8.dp)
+                            .padding(end = 6.dp)
                             .testTag("export_top_button")
                     ) {
                         Icon(
@@ -155,7 +202,7 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "এক্সপোর্ট",
+                            text = "রেন্ডার",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -243,15 +290,20 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                 when (currentTab) {
                     EditorTab.TIMELINE -> {
                         TimelineTrack(
-                            durationMs = project.audioDurationMs,
+                            project = project,
                             currentPositionMs = currentPositionMs,
                             isPlaying = isPlaying,
-                            captions = project.captions,
                             selectedSegmentId = selectedSegmentId,
                             onSeek = { viewModel.audioService.seekTo(it) },
                             onTogglePlayPause = { viewModel.audioService.togglePlayPause() },
                             onSelectSegment = { viewModel.setSelectedSegment(it) },
                             onAddSegmentClick = { showAddCaptionDialog = true },
+                            onOpenSpeedDuration = { showSpeedDurationDialog = true },
+                            onAdjustDelta = { viewModel.adjustDurationDelta(it) },
+                            onResetToAudio = { viewModel.resetDurationToAudio() },
+                            onRazorCut = { viewModel.razorCutCaptionAt(it) },
+                            onMarkIn = { viewModel.markInPoint(it) },
+                            onMarkOut = { viewModel.markOutPoint(it) },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -269,6 +321,9 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                             onHighlightColorChange = { viewModel.updateStyle { s -> s.copy(highlightColor = it) } },
                             onToggleAllCaps = { viewModel.updateStyle { s -> s.copy(allCaps = it) } },
                             onToggleWordHighlight = { viewModel.updateStyle { s -> s.copy(showWordHighlight = it) } },
+                            onColorLutSelect = { viewModel.setColorLut(it) },
+                            onToggleVignette = { viewModel.toggleVignette() },
+                            onToggleLetterbox = { viewModel.toggleLetterbox() },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -399,6 +454,20 @@ fun CapGrokApp(viewModel: EditorViewModel) {
                 viewModel.setGrokApiKey(grKey)
             },
             onDismiss = { showSettingsDialog = false }
+        )
+    }
+
+    // 5. Premiere Pro Speed & Duration Dialog
+    if (showSpeedDurationDialog) {
+        SpeedAndDurationDialog(
+            project = project,
+            onSetDuration = { viewModel.setVideoDuration(it) },
+            onAdjustDelta = { viewModel.adjustDurationDelta(it) },
+            onResetToAudio = { viewModel.resetDurationToAudio() },
+            onSetSpeed = { viewModel.setPlaybackSpeed(it) },
+            onSetTrimStart = { viewModel.setTrimStart(it) },
+            onSetTrimEnd = { viewModel.setTrimEnd(it) },
+            onDismiss = { showSpeedDurationDialog = false }
         )
     }
 }

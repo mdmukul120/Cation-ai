@@ -1,6 +1,6 @@
 {
-  "name": "CapGrok",
-  "description": "AI-powered voice analysis and synchronized caption video editor using Grok and Gemini with CapCut-style templates and fast video rendering.",
+  "name": "FilmCraft",
+  "description": "Professional video editor and AI caption studio inspired by Premiere Pro, featuring precision duration trimming, voice-synchronized captions, LUT filters, and fast export.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

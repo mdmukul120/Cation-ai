@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "CapGrok"
+rootProject.name = "FilmCraft"
 
 include(":app")

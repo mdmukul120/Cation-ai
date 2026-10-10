@@ -372,6 +372,56 @@ fun VideoPreviewCanvas(
                             }
                         }
                     }
+
+                    // 3. Cinema Color Grading LUT Overlays (Premiere Pro Lumetri Look)
+                    when (style.colorLut) {
+                        ColorGradingLut.TEAL_ORANGE -> {
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(Color(0x33FF9800), Color(0x3300838F)),
+                                    startY = 0f,
+                                    endY = h
+                                )
+                            )
+                        }
+                        ColorGradingLut.WARM_VINTAGE -> {
+                            drawRect(color = Color(0x28FFB300))
+                        }
+                        ColorGradingLut.MOODY_MONO -> {
+                            drawRect(color = Color(0x33BDBDBD))
+                        }
+                        ColorGradingLut.CYBERPUNK -> {
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(Color(0x30E040FB), Color(0x3000E5FF)),
+                                    startX = 0f,
+                                    endX = w
+                                )
+                            )
+                        }
+                        ColorGradingLut.COLD_CINEMA -> {
+                            drawRect(color = Color(0x280277BD))
+                        }
+                        ColorGradingLut.NATURAL -> {}
+                    }
+
+                    // 4. Cinema Vignette
+                    if (style.enableVignette) {
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(Color.Transparent, Color(0x99000000)),
+                                center = Offset(w * 0.5f, h * 0.5f),
+                                radius = kotlin.math.hypot(w * 0.5f, h * 0.5f)
+                            )
+                        )
+                    }
+
+                    // 5. CinemaScope 2.39:1 Letterbox Bars
+                    if (style.enableLetterboxBars) {
+                        val barHeight = h * 0.12f
+                        drawRect(color = Color.Black, topLeft = Offset(0f, 0f), size = Size(w, barHeight))
+                        drawRect(color = Color.Black, topLeft = Offset(0f, h - barHeight), size = Size(w, barHeight))
+                    }
                 }
 
                 // Play overlay if paused

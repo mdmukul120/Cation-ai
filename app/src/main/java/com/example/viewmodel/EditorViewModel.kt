@@ -100,19 +100,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Imports an audio file picked from device storage
+     * Imports an audio file picked from device storage.
+     * Duration is strictly derived from the actual audio file without artificial padding.
      */
-    fun onAudioSelected(uri: Uri, fileName: String, durationMsHint: Long = 20000L) {
+    fun onAudioSelected(uri: Uri, fileName: String) {
         viewModelScope.launch {
             val localFile = audioService.copyUriToLocalFile(uri)
-            val realDur = audioService.getAccurateDuration(localFile.absolutePath).coerceAtLeast(durationMsHint)
-            audioService.loadAudio(localFile.absolutePath, realDur)
+            audioService.loadAudio(localFile.absolutePath, 0L)
+            val realDur = audioService.durationMs.value.coerceAtLeast(1000L)
 
             _project.update {
                 it.copy(
                     title = fileName.substringBeforeLast(".").ifBlank { "Imported Voice" },
                     audioUri = localFile.absolutePath,
                     audioDurationMs = realDur,
+                    trimStartMs = 0L,
+                    trimEndMs = realDur, // Strictly matched to voice file length
                     isDemo = false
                 )
             }
@@ -136,8 +139,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val recordedFile = audioService.stopRecording()
         if (recordedFile != null && recordedFile.exists()) {
             val liveText = audioService.liveRecognizedText.value
-            val realDur = audioService.getAccurateDuration(recordedFile.absolutePath).coerceAtLeast(2000L)
-            audioService.loadAudio(recordedFile.absolutePath, realDur)
+            val recordedDur = audioService.lastRecordedDurationMs
+            audioService.loadAudio(recordedFile.absolutePath, recordedDur)
+            val realDur = audioService.durationMs.value.coerceAtLeast(recordedDur).coerceAtLeast(1000L)
 
             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             _project.update {
@@ -145,6 +149,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     title = "Voice Recording ($timeStr)",
                     audioUri = recordedFile.absolutePath,
                     audioDurationMs = realDur,
+                    trimStartMs = 0L,
+                    trimEndMs = realDur, // Strictly matched to voice file length
                     isDemo = false
                 )
             }
@@ -176,7 +182,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 audioFile = audioFile,
                 customApiKey = _geminiApiKey.value
             )
-            val captions = captionsResult.getOrNull() ?: geminiService.createSmartSynchronizedCaptions(transcriptPrompt, durationMs)
+            val rawCaptions = captionsResult.getOrNull() ?: geminiService.createSmartSynchronizedCaptions(transcriptPrompt, durationMs)
+
+            // Ensure captions do not overflow voice duration
+            val captions = rawCaptions.map { seg ->
+                val s = seg.startMs.coerceIn(0L, durationMs)
+                val e = seg.endMs.coerceIn(s + 300L, durationMs)
+                seg.copy(
+                    startMs = s,
+                    endMs = e,
+                    words = seg.words.map { w ->
+                        w.copy(startMs = w.startMs.coerceIn(s, e), endMs = w.endMs.coerceIn(s, e))
+                    }
+                )
+            }.filter { it.startMs < it.endMs }
 
             _aiStatusMessage.value = "জেমিনি এআই বক্তব্যের সারসংক্ষেপ প্রস্তুত করছে..."
 
@@ -314,6 +333,102 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             val combined = (proj.captions + newSeg).sortedBy { it.startMs }
             proj.copy(captions = combined)
         }
+    }
+
+    // --- Premiere Pro Style Duration & Trimming Controls ---
+
+    /**
+     * Sets exact output video duration in milliseconds (increases or decreases video duration)
+     */
+    fun setVideoDuration(newDurationMs: Long) {
+        _project.update { current ->
+            val safeDuration = newDurationMs.coerceAtLeast(1000L)
+            val newEnd = current.trimStartMs + safeDuration
+            current.copy(
+                trimEndMs = newEnd,
+                lastModified = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /**
+     * Quick adjust video duration by delta (+1s, -1s, +5s, -5s)
+     */
+    fun adjustDurationDelta(deltaMs: Long) {
+        _project.update { current ->
+            val curDuration = (current.trimEndMs - current.trimStartMs)
+            val newDuration = (curDuration + deltaMs).coerceAtLeast(1000L)
+            current.copy(
+                trimEndMs = current.trimStartMs + newDuration,
+                lastModified = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /**
+     * Resets video duration to exactly match the voice audio file duration
+     */
+    fun resetDurationToAudio() {
+        _project.update { current ->
+            val audioDur = current.audioDurationMs.coerceAtLeast(1000L)
+            current.copy(
+                trimStartMs = 0L,
+                trimEndMs = audioDur,
+                playbackSpeed = 1.0f,
+                lastModified = System.currentTimeMillis()
+            )
+        }
+    }
+
+    fun setTrimStart(startMs: Long) {
+        _project.update { current ->
+            val safeStart = startMs.coerceIn(0L, (current.trimEndMs - 500L).coerceAtLeast(0L))
+            current.copy(trimStartMs = safeStart, lastModified = System.currentTimeMillis())
+        }
+    }
+
+    fun setTrimEnd(endMs: Long) {
+        _project.update { current ->
+            val safeEnd = endMs.coerceAtLeast(current.trimStartMs + 500L)
+            current.copy(trimEndMs = safeEnd, lastModified = System.currentTimeMillis())
+        }
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        _project.update { current ->
+            current.copy(playbackSpeed = speed.coerceIn(0.5f, 3.0f), lastModified = System.currentTimeMillis())
+        }
+    }
+
+    fun markInPoint(positionMs: Long) {
+        setTrimStart(positionMs)
+    }
+
+    fun markOutPoint(positionMs: Long) {
+        setTrimEnd(positionMs)
+    }
+
+    fun razorCutCaptionAt(positionMs: Long) {
+        val currentSeg = _project.value.captions.find { positionMs in (it.startMs + 200L)..(it.endMs - 200L) }
+        if (currentSeg != null) {
+            splitCaptionSegment(currentSeg.id, positionMs)
+        }
+    }
+
+    fun setColorLut(lut: ColorGradingLut) {
+        updateStyle { it.copy(colorLut = lut) }
+    }
+
+    fun toggleVignette() {
+        updateStyle { it.copy(enableVignette = !it.enableVignette) }
+    }
+
+    fun toggleLetterbox() {
+        updateStyle { it.copy(enableLetterboxBars = !it.enableLetterboxBars) }
+    }
+
+    fun setExportSettings(resolution: Int, fps: Int) {
+        _project.update { it.copy(exportResolution = resolution, exportFps = fps) }
     }
 
     // --- Style Updates ---

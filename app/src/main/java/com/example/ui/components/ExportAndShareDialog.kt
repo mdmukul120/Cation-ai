@@ -163,7 +163,7 @@ fun ExportAndShareDialog(
                 } else {
                     // Start Export Button
                     Text(
-                        text = "উচ্চমানের MP4 ভিডিও (720p HD) ফরম্যাটে দ্রুত রেন্ডার করুন। ব্যাকগ্রাউন্ড মোশন এবং ক্যাপশন ওভারলে যুক্ত হবে।",
+                        text = "FilmCraft প্রো এনকোডার দিয়ে সম্পূর্ণ সিঙ্কড MP4 ভিডিও রেন্ডার করুন। ভয়েস ফাইলের সঠিক ডিউরেশন, সিনেমাটিক LUTs ও ক্যাপশন ওভারলে যুক্ত থাকবে।",
                         fontSize = 12.sp,
                         color = Color(0xFFCCC8E0),
                         lineHeight = 18.sp
